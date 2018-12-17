@@ -10,4 +10,5 @@ Display Winter Holiday champions' cooldown on the lockout timer window
 
 # Download
 Download last version here : https://github.com/Judgy53/SWL-WHCCooldown/releases/latest
+
 If you're updating from the 1.0 version, please read this : https://github.com/Judgy53/SWL-WHCCooldown/wiki/Update-from-1.0
