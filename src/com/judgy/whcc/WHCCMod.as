@@ -3,8 +3,10 @@ import com.Utils.Archive;
 import com.Utils.Colors;
 import com.Utils.ID32;
 import com.Utils.LDBFormat;
+import com.Utils.WeakList;
 import com.GameInterface.Game.Character;
 import com.GameInterface.DistributedValue;
+import com.GameInterface.Log;
 import com.GameInterface.Utils;
 import com.GameInterface.UtilsBase;
 import com.GameInterface.VicinitySystem;
@@ -14,11 +16,13 @@ import mx.utils.Delegate;
 class com.judgy.whcc.WHCCMod {
 	private var m_swfRoot:MovieClip; 
 	
-	public static var m_trackerList:Array;
+	private var m_trackerList:Array;
 	private var m_trackedChamp:ID32;
 	
-	
 	private var LockoutsDV:DistributedValue;
+	private var DebugDV:DistributedValue;
+	
+	private var m_debugEnabled:Boolean = false;
 	
 	public static function main(swfRoot:MovieClip) {
 		var s_app = new WHCCMod(swfRoot);
@@ -31,21 +35,23 @@ class com.judgy.whcc.WHCCMod {
 	
 	public function WHCCMod(swfRoot:MovieClip) {
 		m_swfRoot = swfRoot;
-		
-		m_trackerList = [];
-		m_trackerList.push(CreateTrackerEntry("Kingsmouth Town — Tragedy", 3030, "38190", 0));
-		m_trackerList.push(CreateTrackerEntry("The Savage Coast — Groundskeeper Hammond", 3040, "38188", 0));
-		m_trackerList.push(CreateTrackerEntry("The Blue Mountain — Max", 3050, "38195", 0));
-		
-		m_trackerList.push(CreateTrackerEntry("The Scorched Desert — Cursed Soul of Greed", 3090, "38199", 0));
-		m_trackerList.push(CreateTrackerEntry("City of the Sun God — Warsmith", 3100, "38184", 0));
-		
-		m_trackerList.push(CreateTrackerEntry("The Besieged Farmlands — Window-Peeper", 3120, "38194", 0));
-		m_trackerList.push(CreateTrackerEntry("The Shadowy Forest — The Grunch", 3130, "38185", 0));
-		m_trackerList.push(CreateTrackerEntry("The Carpathian Fangs — Permafrost ", 3140, "38177", 0));
-		
-		m_trackerList.push(CreateTrackerEntry("Kaidan — The Forgotten", 3070, "38179", 0));
     }
+	
+	private function FillTrackerList() {
+		m_trackerList = [];
+		m_trackerList.push(CreateTrackerEntry("Kingsmouth Town — Tragedy"					, 3030, "38190", 0));
+		m_trackerList.push(CreateTrackerEntry("The Savage Coast — Groundskeeper Hammond"	, 3040, "38188", 0));
+		m_trackerList.push(CreateTrackerEntry("The Blue Mountain — Max"						, 3050, "38195", 0));
+		
+		m_trackerList.push(CreateTrackerEntry("The Scorched Desert — Cursed Soul of Greed"	, 3090, "38199", 0));
+		m_trackerList.push(CreateTrackerEntry("City of the Sun God — Warsmith"				, 3100, "38184", 0));
+		
+		m_trackerList.push(CreateTrackerEntry("The Besieged Farmlands — Window-Peeper"		, 3120, "38194", 0));
+		m_trackerList.push(CreateTrackerEntry("The Shadowy Forest — The Grunch"				, 3130, "38185", 0));
+		m_trackerList.push(CreateTrackerEntry("The Carpathian Fangs — Permafrost "			, 3140, "38177", 0));
+		
+		m_trackerList.push(CreateTrackerEntry("Kaidan — The Forgotten"						, 3070, "38179", 0));
+	}
 	
 	private function CreateTrackerEntry(name:String, playfieldID:Number, dynel:String, expiry:Number) {
 		var obj:Object = new Object();
@@ -58,27 +64,39 @@ class com.judgy.whcc.WHCCMod {
 	
 	public function Load() {
 		if (UtilsBase.GetGameTweak("Seasonal_SWL_Christmas2017")) {
+			FillTrackerList();
+			
 			WaypointInterface.SignalPlayfieldChanged.Connect(PlayfieldChanged, this);
-			DelayedPlayfieldChanged();
+			PlayfieldChanged();
 			
 			LockoutsDV = DistributedValue.Create("lockoutTimers_window");
 			LockoutsDV.SignalChanged.Connect(HookLockoutsWindow, this);
+			
+			DebugDV = DistributedValue.Create("WHCCooldown_DebugEnabled");
+			DebugDV.SignalChanged.Connect(SlotDebugEnabled, this);
 		}
 	};
 	
-	public function OnUnload() {		
+	public function OnUnload() {
 		WaypointInterface.SignalPlayfieldChanged.Connect(PlayfieldChanged, this);
 		
 		VicinitySystem.SignalDynelEnterVicinity.Disconnect(Track, this);
 		VicinitySystem.SignalDynelLeaveVicinity.Disconnect(Untrack, this);
 		
 		LockoutsDV.SignalChanged.Disconnect(HookLockoutsWindow, this);
+		DebugDV.SignalChanged.Disconnect(SlotDebugEnabled, this);
+		
+		while (m_trackerList.length > 0)
+			m_trackerList.shift();
 	}
 	
 	public function LoadConfig(config:Archive) {
 		for (var i in m_trackerList) {
-			m_trackerList[i].expiry = config.FindEntry("WHCC_" + m_trackerList[i].playfieldID, 0);
+			m_trackerList[i].expiry = config.FindEntry("WHCCooldown_" + m_trackerList[i].playfieldID, 0);
 		}
+		
+		DebugDV.SetValue(config.FindEntry("WHCCooldown_DebugEnabled", false));
+		SlotDebugEnabled(DebugDV);
 	}
 	
 	public function SaveConfig() {	
@@ -86,8 +104,10 @@ class com.judgy.whcc.WHCCMod {
 		
 		for (var i in m_trackerList) {
 			var entry:Object = m_trackerList[i];
-			archive.AddEntry("WHCC_" + entry.playfieldID, entry.expiry);
+			archive.AddEntry("WHCCooldown_" + entry.playfieldID, entry.expiry);
 		}
+		
+		archive.AddEntry("WHCCooldown_DebugEnabled", m_debugEnabled);
 		
 		return archive;
 	}
@@ -97,27 +117,42 @@ class com.judgy.whcc.WHCCMod {
 		m_trackedChamp = undefined;
 		VicinitySystem.SignalDynelEnterVicinity.Disconnect(Track, this);
 		VicinitySystem.SignalDynelLeaveVicinity.Disconnect(Untrack, this);
-		
-		//Playfield ID seems to always be 0 when signal triggers, adding a small delay fixes it
-		setTimeout(Delegate.create(this, DelayedPlayfieldChanged), 100);
-		
+
+		DelayedPlayfieldChanged();		
 	}
 	
 	private function DelayedPlayfieldChanged(){
-		if (EnabledPlayfield()){
-			//com.GameInterface.UtilsBase.PrintChatText("Playfield Enabled " + Character.GetClientCharacter().GetPlayfieldID());
+		var playfield:Number = Character.GetClientCharacter().GetPlayfieldID();
+		if (playfield == 0) {
+			DebugLog("Playfield ID invalid, delaying signal connect.");
+			setTimeout(Delegate.create(this, DelayedPlayfieldChanged), 1000);
+			return;
+		}
+		DebugLog("Playfield ID Valid : " + playfield);
+		if (EnabledPlayfield(playfield)){
+			DebugLog("Playfield Entry found. WHC tracking enabled");
 			VicinitySystem.SignalDynelEnterVicinity.Connect(Track, this);
 			VicinitySystem.SignalDynelLeaveVicinity.Connect(Untrack, this);
+			//kickstartTracking(); //has a huge chance to make the game crash.
+		} else {
+			DebugLog("Playfield Entry not found. WHC tracking disabled");
 		}
 	}
 	
-    private function EnabledPlayfield() {
-		var playfield = Character.GetClientCharacter().GetPlayfieldID();
+    private function EnabledPlayfield(playfield:Number) {
 		for (var i = 0; i < m_trackerList.length; i++) {
 			if (m_trackerList[i].playfieldID == playfield)
 				return true;
 		}
 		return false;
+	}
+	
+	private function kickstartTracking() {
+		var list:WeakList = Dynel.s_DynelList;
+		for (var i = 0; i < list.GetLength(); i++) {
+			var dyn:Dynel = list.GetObject(i);
+			Track(dyn.GetID());
+		}
 	}
 	
 	//TRACKING SYSTEM
@@ -127,14 +162,16 @@ class com.judgy.whcc.WHCCMod {
 		if (id.GetType() == 50000) {
 			var entry:Object = GetTrackerEntry(dyn);
 			if (!entry) return;
-			com.GameInterface.UtilsBase.PrintChatText(entry.name + " FOUND o/");
+			DebugLog("WHC Found and tracked : \"" + entry.name + "\"");
 			m_trackedChamp = id;
 			
 		} else if (id.GetType() == 51322 && dyn.GetStat(112) == 7324711) { // loot bag
 			var champDynel:Dynel = Dynel.GetDynel(m_trackedChamp);
 			if (champDynel && champDynel.IsDead()) {
-				//com.GameInterface.UtilsBase.PrintChatText("LootBag Found and Champ is Dead !");
+				DebugLog("LootBag Found and WHC is Dead. Starting cooldown.");
 				StartCooldown(champDynel.GetStat(112));
+			} else {
+				DebugLog("LootBag Found but WHC tracking went wrong. Cooldown not started");
 			}
 		}
 	}
@@ -166,21 +203,7 @@ class com.judgy.whcc.WHCCMod {
 	
 	
 	
-	//UI STUFF BELOW (HEAVILY "INSPIRED" FROM CLOCKWATCHER)
-	private function GetWHCList() {
-		var arr:Array = new Array();
-		
-		for (var i = 0; i < m_trackerList.length; i++) {
-			var obj = new Object();
-			obj.playfieldID = m_trackerList[i].playfieldID;
-			obj.name = m_trackerList[i].name;
-			obj.expiry = m_trackerList[i].expiry;
-			arr.push(obj);
-		}
-		
-		return arr;
-	}
-	
+	//UI STUFF BELOW (HEAVILY "INSPIRED" FROM CLOCKWATCHER)	
 	private function HookLockoutsWindow(dv:DistributedValue) {
 		if (!dv.GetValue()) return;
 		var content:MovieClip = _root.lockouttimers.m_Window.m_Content;
@@ -189,8 +212,13 @@ class com.judgy.whcc.WHCCMod {
 	}
 	
 	private function ApplyHook(content:MovieClip):Void {
+		DebugLog("Lockout Window Hook Started");
+		if (content.m_WHCS != undefined || content.UpdateWHCS != undefined) {
+			DebugLog("Lockout Window Hook Failed - Hook already applied");
+			return;
+		}
 		var proto:MovieClip = content.m_DailyLoginReset;
-		var whcs:Array = GetWHCList();
+		var whcs:Array = m_trackerList;
 		content.m_WHCS = new Array();
 		for (var i:Number = 0; i < whcs.length; ++i) {
 			var clip:MovieClip = proto.duplicateMovieClip("m_WHC" + whcs[i].playfieldID, content.getNextHighestDepth());
@@ -208,6 +236,7 @@ class com.judgy.whcc.WHCCMod {
 		content.onUnload = onContentUnload;
 		content.m_TimeIntervalWHCS = setInterval(content, "UpdateWHCS", 1000);
 		content.UpdateWHCS();
+		DebugLog("Lockout Window Hook Done");
 	}
 	
 	private function UpdateExpiry(time:Number) {
@@ -250,5 +279,22 @@ class com.judgy.whcc.WHCCMod {
 			allClear = target.m_WHCS[i].UpdateExpiry(time) && allClear;
 		}
 		if (allClear) { target.ClearTimeInterval(); }
+	}
+	
+	private function SlotDebugEnabled(dv:DistributedValue) {
+		if (DebugDV.GetValue()) {
+			m_debugEnabled = true;
+			DebugLog("Debug Enabled");
+		} else {
+			DebugLog("Debug Disabled");
+			m_debugEnabled = false;
+		}
+	}
+	
+	private function DebugLog(str:String) {
+		if (m_debugEnabled) {
+			UtilsBase.PrintChatText("[WHCC] " + str);
+			Log.Error("[WHCC]", str);
+		}
 	}
 }

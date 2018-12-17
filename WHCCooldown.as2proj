@@ -4,7 +4,7 @@
   <output>
     <movie outputType="Application" />
     <movie input="" />
-    <movie path="bin\WHC_Cooldown.swf" />
+    <movie path="bin\WHCCooldown.swf" />
     <movie fps="30" />
     <movie width="1000" />
     <movie height="800" />
